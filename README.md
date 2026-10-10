@@ -1,148 +1,163 @@
-# Secure Remote Access to a Linux Homelab with Tailscale
+# Secure Remote Access to My Linux Homelab with Tailscale
 
-**Lab 01.5 | Tailscale · Device Approval · Least-Privilege Network Grants · OpenSSH · Ubuntu Server · Proxmox VE**
+**Lab 01.5 | Tailscale | Secure remote access | Device approval | OpenSSH | Ubuntu Server**
 
-I configured Tailscale so I could securely administer my home Ubuntu server from my Windows laptop when I'm away from home. I kept the SSH hardening from my [Linux Server Administration & Security Hardening](https://github.com/KingRichardVII/linux-server-security-hardening) project and added two more layers: **manual device approval** and a **network grant limited to SSH on TCP/22**.
+After finishing my [Linux Server Administration & Security Hardening lab](https://github.com/KingRichardVII/linux-server-security-hardening), I wanted a way to connect to my Ubuntu server when I wasn't at home.
 
-I tested the configuration from my phone's cellular hotspot, not just from my home Wi-Fi. The laptop reached the server through Tailscale and authenticated using its own passphrase-protected Ed25519 SSH key. I also tested denied connections before adding the grant and on a separate port afterward.
+I didn't want to open SSH to the public Internet through my router. Instead, I set up **Tailscale**, a private network that lets my laptop reach the server securely. I kept my existing SSH hardening and added two rules: **new devices need approval**, and **my laptop is allowed to reach the server on SSH port 22 only**.
 
-> **Result:** Remote SSH worked over Tailscale from an external network. The access policy allowed a specific laptop-to-server TCP/22 connection without granting general access to other tailnet services. This is a personal educational homelab, not a production Zero Trust deployment.
+The real test was connecting my laptop to my phone's cellular hotspot, away from my home Wi-Fi. **It worked:** I reached `linux01` and signed in with a separate SSH key created just for my laptop.
 
-## Architecture
+## What I wanted to prove
+
+- An approved device could connect to my server from outside my home network.
+- A device being approved didn't automatically mean it could access every service.
+- My laptop's SSH key worked without copying the private key from my desktop.
+- I could keep Proxmox management off Tailscale and avoid setting up router port forwarding for this lab.
+
+## How the connection works
 
 ```mermaid
 flowchart TB
-    L["Windows laptop<br/>Cellular hotspot during remote test<br/>Tailscale approved device + Ed25519 key"]
-    T["Tailscale overlay<br/>Explicit grant: laptop → linux01 TCP/22"]
-    U["linux01 — Ubuntu Server VM<br/>Tailscale + hardened OpenSSH + UFW"]
-    P["Proxmox VE hypervisor<br/>Management not enrolled in this tailnet"]
-    D["Desktop workstation<br/>Existing home-LAN SSH fallback"]
-
-    L -->|"SSH through encrypted overlay"| T
-    T -->|"TCP/22 only under configured grant"| U
-    P -.->|"Hosts VM"| U
-    D -.->|"Existing LAN SSH administration"| U
+    L["Windows laptop / cellular hotspot"]
+    T["Private Tailscale network / laptop-to-server SSH grant"]
+    U["linux01 / Ubuntu Server / hardened OpenSSH + UFW"]
+    P["Proxmox VE / not enrolled in Tailscale"]
+    D["Desktop / existing home-LAN access"]
+    L -->|"Encrypted remote connection"| T
+    T -->|"Allowed: TCP 22"| U
+    P -.->|"Hosts the VM"| U
+    D -.->|"LAN SSH fallback"| U
 ```
 
-No home-router port-forwarding changes were needed for this setup. The Proxmox management interface was **not** added to Tailscale. Only the Ubuntu guest and Windows laptop were enrolled.
-
-## Environment
+Only my laptop and the Ubuntu VM were added to Tailscale. The Proxmox host stayed separate, and I didn't configure subnet routing or an exit node.
 
 | Component | Lab setup |
-|---|---|
-| Hypervisor | Dedicated Proxmox VE host |
-| Server | `linux01`, Ubuntu Server 26.04.1 LTS virtual machine |
-| Server networking | Bridged home LAN plus a Tailscale interface |
-| Remote client | Windows laptop, joined to the same personal tailnet |
-| VPN software | Tailscale 1.104.1 observed on Ubuntu |
-| Server authentication | OpenSSH, Ed25519 public-key authentication, password login disabled |
-| Host firewall | UFW, default-deny inbound with an existing LAN-specific SSH rule |
-| Tailnet policy | Manual device approval; explicit laptop → Ubuntu `tcp:22` grant |
+| --- | --- |
+| Linux server | `linux01` — Ubuntu Server 26.04.1 LTS on Proxmox |
+| Remote device | Windows laptop |
+| Private networking | Tailscale (version `1.104.1` observed on Ubuntu) |
+| SSH login | Standard OpenSSH with a passphrase-protected Ed25519 key |
+| Access rule | Laptop → Ubuntu on `tcp:22` |
+| Existing firewall | UFW, default deny incoming; LAN SSH rule retained |
 
-## Implementation and security controls
+## What I configured and tested
 
-### 1. Require device approval
+### 1. Required approval for new devices
 
-I enabled **Manually approve new devices** in Tailscale's admin console. My laptop could sign in to the account but appeared as **Needs approval** until I approved it separately. That demonstrated the difference between account authentication and device authorization.
+I turned on **Manually approve new devices** in Tailscale. When I signed in on my laptop, it appeared as **Needs approval**. I had to approve it separately before it could use the private network.
+
+That was an important distinction for me: **signing into an account isn't the same as being authorized to access a device**.
 
 ![Device approval enabled](screenshots/device-approval-setting.png)
 
-*Figure 1 — New tailnet devices require manual approval.*
+*Figure 1 — Manual approval required for new devices.*
 
-![New laptop pending approval](screenshots/device-pending-approval.png)
+![Laptop pending approval](screenshots/device-pending-approval.png)
 
-*Figure 2 — The laptop was enrolled but awaiting administrator approval; account and device identifiers were sanitized.*
+*Figure 2 — My laptop waiting for approval.*
 
-### 2. Replace the default allow-all policy
+### 2. Removed the default allow-everything rule
 
-The new tailnet initially allowed all devices to connect to all other devices on all ports. I removed that rule, leaving **no general access grants**. I also removed the default **Tailscale SSH** rule because this lab uses standard OpenSSH with the existing hardened server configuration instead.
+My new tailnet originally allowed all approved devices to reach each other on all ports. That was more access than I wanted for this lab.
 
-![Empty general access policy](screenshots/deny-by-default-policy.png)
+I removed the broad rule and the unused Tailscale SSH rule. I'm still using **standard OpenSSH**, not Tailscale's separate SSH feature.
 
-*Figure 3 — The allow-all rule was removed before testing new connections.*
+![Deny-by-default policy](screenshots/deny-by-default-policy.png)
 
-### 3. Grant exactly one SSH connection
+*Figure 3 — No general network-access grants before adding my SSH rule.*
 
-I added one grant permitting the approved laptop to initiate **TCP/22 to `linux01`**. The grant used the two devices' current Tailscale IPv4 addresses as selectors, not an all-users or all-ports rule.
+### 3. Allowed only laptop-to-server SSH
 
-![Narrowly scoped SSH grant](screenshots/laptop-ssh-grant.png)
+I added a single network **grant** allowing my laptop to connect to `linux01` on **TCP port 22**. I didn't grant access to all devices or all ports.
 
-*Figure 4 — One source, one destination, and one protocol/port (`tcp:22`). Exact device addresses are hidden.*
+![Laptop SSH grant](screenshots/laptop-ssh-grant.png)
 
-The sample policy structure, with placeholders instead of live addresses, is in [`configs/ssh-grant-example.json`](configs/ssh-grant-example.json). Address-based rules will need updating if a device's assigned Tailscale address changes. A tag-based policy may be a better long-term design.
+*Figure 4 — One laptop, one destination, and one allowed service.*
 
-### 4. Test DENY before ALLOW
+The example configuration is in [`configs/ssh-grant-example.json`](configs/ssh-grant-example.json). The actual rule uses device Tailscale addresses; if those addresses change, the rule may need to be updated.
 
-On the laptop, `Test-NetConnection` to the server's Tailscale address on port 22 **failed before the grant** and **succeeded after the grant**.
+### 4. Tested the connection before and after the grant
 
-| Test | Observed outcome |
-|---|---|
-| Before the grant: laptop → server TCP/22 | `TcpTestSucceeded : False` |
-| After the grant: laptop → server TCP/22 | `TcpTestSucceeded : True` |
+I wanted to see whether the rule actually changed anything, so I tested the same connection twice using PowerShell's `Test-NetConnection`.
 
-![SSH denied prior to grant](screenshots/ssh-before-grant-denied.png)
+| Test | Result |
+| --- | --- |
+| Laptop → Ubuntu TCP/22 **before** adding the grant | `False` — couldn't connect |
+| Laptop → Ubuntu TCP/22 **after** adding the grant | `True` — could connect |
 
-![SSH allowed after grant](screenshots/ssh-after-grant-allowed.png)
+![Connection denied before grant](screenshots/ssh-before-grant-denied.png)
 
-*Figures 5–6 — A before/after connection test. The change is consistent with the explicitly authorized Tailscale policy; the tests alone do not isolate every firewall layer involved.*
+*Figure 5 — SSH port unreachable before I allowed the connection.*
 
-### 5. Keep separate SSH credentials for separate devices
+![Connection allowed after grant](screenshots/ssh-after-grant-allowed.png)
 
-I generated a separate, passphrase-protected **Ed25519 SSH key** on the laptop instead of copying my desktop's private key. I appended **only the laptop's public key** to `richard`'s `~/.ssh/authorized_keys` on Ubuntu, preserving the desktop's existing key.
+*Figure 6 — The same test succeeded after I saved the grant.*
 
-I verified `.ssh` permissions (`700`), `authorized_keys` permissions (`600`), and the server's SSH host-key fingerprint before accepting the laptop's first connection over Tailscale. The separate public-key entries make it possible to revoke laptop access independently of the desktop.
+This was strong evidence that the restricted access setup was working as intended. The tests don't, by themselves, identify every firewall component involved.
 
-### 6. Confirm remote administration from a different network
+### 5. Gave my laptop its own SSH key
 
-I disconnected the laptop from my home Wi-Fi, used a phone's **cellular hotspot**, and repeated the tests. TCP/22 remained reachable through Tailscale; SSH authenticated using the laptop's dedicated key.
+My desktop already had a working SSH key from Lab 01. Instead of copying its private key, I generated a new **Ed25519 key pair** on my laptop and added only the laptop's public key to Ubuntu's `authorized_keys` file.
 
-On the server, `hostname` returned `linux01` and `whoami` returned `richard`. The `SSH_CONNECTION` environment variable showed a Tailscale-to-Tailscale connection terminating on port 22. Exact endpoints have been redacted from the public screenshot.
+I checked the file permissions (`700` for `.ssh`, `600` for `authorized_keys`) and compared the server's SSH host-key fingerprint before accepting the connection. My desktop's original key stayed authorized, so the two devices can be managed separately.
 
-![TCP 22 reachable on hotspot](screenshots/external-network-tcp22-reachable.png)
+### 6. Connected from outside my home network
 
-![Authenticated SSH session](screenshots/external-network-ssh-authenticated.png)
+This was the test I cared about most. I disconnected my laptop from home Wi-Fi, connected it to my phone's **cellular hotspot**, and ran the SSH connection test again.
 
-*Figures 7–8 — Verified TCP reachability and authenticated remote administration while the laptop used an external cellular connection.*
+Port 22 was reachable, and I successfully logged into Ubuntu using my laptop's own key. On the server, I checked `hostname`, `whoami`, and `SSH_CONNECTION` to confirm the session reached `linux01` over the Tailscale addresses.
 
-### 7. Test a separate, ungranted service port
+![External network TCP 22 reachable](screenshots/external-network-tcp22-reachable.png)
 
-I started a temporary Python HTTP listener on Ubuntu, bound to its Tailscale address on **TCP/8080**, and tested connectivity from the laptop. Port 8080 returned `TcpTestSucceeded : False`, even though TCP/22 was reachable. I stopped the test server with `Ctrl+C` and later confirmed no listener remained on port 8080.
+*Figure 7 — SSH port reachable while my laptop was using the hotspot.*
 
-![Ungranted port 8080 unreachable](screenshots/ungranted-port-denied.png)
+![Remote SSH login](screenshots/external-network-ssh-authenticated.png)
 
-*Figure 9 — TCP/8080 was unreachable. This is consistent with the restricted network grant, but UFW and Tailscale's Linux firewall integration were not independently isolated in this test.*
+*Figure 8 — Successful SSH session from outside my home network.*
 
-## Final validation
+### 7. Checked that another port wasn't reachable
 
-Both `tailscaled` and OpenSSH remained active. UFW still showed the original **default-deny incoming** policy and **LAN-only TCP/22 rule**. No TCP/8080 listener remained after cleanup. `tailscale status` showed the Ubuntu server and Windows laptop connected; at the recorded checkpoint, the connection was reported as **direct** rather than relayed.
+To make sure I wasn't accidentally granting access to everything, I started a temporary Python HTTP server on **TCP/8080** and tried reaching it from my laptop.
 
-![Post-test server health](screenshots/post-test-health-check.png)
+The connection failed (`TcpTestSucceeded : False`), even though SSH on port 22 worked. I then stopped the temporary server and verified the listener was gone.
 
-*Figure 10 — Service state, firewall policy, and temporary-listener cleanup. External peer addresses were excluded from this public capture.*
+![Ungranted port denied](screenshots/ungranted-port-denied.png)
 
-## What I learned
+*Figure 9 — Port 8080 was not reachable from the laptop.*
 
-The biggest lesson was that remote access isn't just about creating an encrypted connection. I needed to decide **which devices could join, which traffic was authorized, and which SSH key could log in**. Testing before and after a policy change showed why it is important to check actual behavior rather than trust a configuration screen alone.
+That result is **consistent with the restricted policy**, but I didn't separately prove whether Tailscale's rules or Ubuntu's UFW rules were responsible for blocking this particular connection.
 
-I also ran into a workflow issue while installing the laptop's public key: copying a command replaced the key contents in the clipboard. I corrected the process by verifying the key before transferring it and then using an existing trusted SSH connection to append the public key without replacing the desktop key. This reinforced the value of small verification checkpoints and clear documentation.
+## Final checks
+
+After testing, I confirmed that Tailscale and SSH were still running, UFW was still enabled with its original LAN SSH rule, and nothing was listening on port 8080. Tailscale also showed both enrolled devices and reported a **direct** connection at that checkpoint.
+
+![Post-test health check](screenshots/post-test-health-check.png)
+
+*Figure 10 — Server services, firewall, and temporary-test cleanup verified.*
+
+## What went wrong and what I learned
+
+My biggest takeaway is that **secure remote access takes more than installing a VPN**. I had to think about which devices were trusted, which connections were allowed, and which SSH key could actually log in.
+
+I also ran into a surprisingly simple problem while transferring my laptop's public key: copying the next PowerShell command replaced the public key in my clipboard. Once I noticed that, I verified the key before transferring it through my already-trusted desktop SSH connection. It was a good reminder to check each step instead of assuming the problem was with the server.
 
 ## Scope and limitations
 
-- **Not a complete endpoint or network security audit.** Device approval, a scoped grant, and key-based SSH were configured and tested; they do not guarantee protection against every attack.
-- **Port 8080 denial was observed but not attributed to a single layer.** Tailscale's Linux netfilter integration and UFW can both affect reachability. The test shows the connection failed, not which specific rule caused it.
-- **Tailscale device selectors were IPv4 addresses.** They are specific, but can require updates if a device is re-enrolled or its address changes.
-- **No router port forwarding was configured as part of this lab.** The router's entire existing configuration was not independently audited.
-- **No subnet router, exit node, Tailscale SSH, or direct Proxmox remote management** was set up.
-- **The external test used one cellular-hotspot network.** Results on other networks and under different NAT/firewall conditions may vary; direct vs. relayed Tailscale connectivity can also change.
-- **The screenshots are sanitized.** Public images intentionally mask endpoint addresses, account details, and local Windows profile paths; original captures remain private.
+This is a personal homelab, not a complete enterprise Zero Trust deployment or security audit. The tests show that the configured SSH connection worked and that TCP/8080 was unreachable in the tested setup; they don't prove every possible access path is blocked.
+
+I used device IP addresses in my Tailscale grant, which may need updating if a device is re-enrolled. I tested the external connection using one cellular-hotspot network. I didn't configure Tailscale SSH, subnet routing, an exit node, or remote access to the Proxmox management interface, and I didn't independently audit every router setting.
+
+Public screenshots are sanitized to hide personal information, account details, and unnecessary network identifiers. Originals remain private.
 
 ## Documentation
 
-- [Implementation steps and commands](docs/implementation.md)
-- [Security validation matrix](docs/security-validation.md)
-- [Troubleshooting and lessons learned](docs/troubleshooting.md)
-- [Screenshot evidence and sanitization notes](docs/evidence-manifest.md)
-- [Example Tailscale SSH-only network grant](configs/ssh-grant-example.json)
+- [Full setup notes and commands](docs/implementation.md)
+- [Security tests and results](docs/security-validation.md)
+- [Troubleshooting notes](docs/troubleshooting.md)
+- [Screenshot and privacy notes](docs/evidence-manifest.md)
+- [Example Tailscale access grant](configs/ssh-grant-example.json)
 
-**Related project:** [Lab 01 — Linux Server Administration & Security Hardening](https://github.com/KingRichardVII/linux-server-security-hardening)
-This project builds on my original Linux security hardening lab, where I configured least-privilege permissions, hardened OpenSSH, implemented UFW firewall rules, investigated authentication logs, and performed Linux system administration.
+**Previous project:** [Lab 01 — Linux Server Administration & Security Hardening](https://github.com/KingRichardVII/linux-server-security-hardening)
+
+**Next major lab:** Splunk SIEM and Linux Security Monitoring.
