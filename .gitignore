@@ -1,0 +1,12 @@
+# Local secrets and credentials must never be committed.
+.env
+.env.*
+*.key
+*.pem
+id_ed25519*
+*private*
+*token*
+*.log
+.DS_Store
+Thumbs.db
+__pycache__/

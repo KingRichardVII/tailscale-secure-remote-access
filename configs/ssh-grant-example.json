@@ -1,0 +1,9 @@
+{
+  "grants": [
+    {
+      "src": ["<LAPTOP_TAILSCALE_IPV4>"],
+      "dst": ["<UBUNTU_TAILSCALE_IPV4>"],
+      "ip": ["tcp:22"]
+    }
+  ]
+}
