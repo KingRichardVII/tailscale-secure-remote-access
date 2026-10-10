@@ -145,3 +145,4 @@ I also ran into a workflow issue while installing the laptop's public key: copyi
 - [Example Tailscale SSH-only network grant](configs/ssh-grant-example.json)
 
 **Related project:** [Lab 01 — Linux Server Administration & Security Hardening](https://github.com/KingRichardVII/linux-server-security-hardening)
+This project builds on my original Linux security hardening lab, where I configured least-privilege permissions, hardened OpenSSH, implemented UFW firewall rules, investigated authentication logs, and performed Linux system administration.
